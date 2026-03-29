@@ -131,7 +131,7 @@ go test -bench=. -benchmem -count=5
 | Unicode    |     16     |    16    |      **12**      |   −25%    |
 | Weird      |     95     |    95    |      **67**      |   −29%    |
 
-To reproduce, clone [cyberphone/json-canonicalization](https://github.com/cyberphone/json-canonicalization) and [gowebpki/jcs](https://github.com/gowebpki/jcs) alongside this repo, then run `go test -bench=. -benchmem -count=5` in the `comparison/` directory.
+To reproduce, run `go test -bench=. -benchmem -count=5` in the root of this repo.
 
 ### What drives the gains
 
