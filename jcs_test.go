@@ -120,11 +120,16 @@ func TestTransform_errors(t *testing.T) {
 		{"invalid escape sequence", `"\q"`},
 		{"lone high surrogate", `"\ud83d"`},
 		{"lone low surrogate", `"\ude02"`},
+		{"reversed surrogate pair", `"\ude00\ud83d"`}, // RFC 8785 §3.2.2.2
+		{"two high surrogates", `"\ud83d\ud83d"`},
+		{"two low surrogates", `"\ude00\ude00"`},
 
 		// byte-level
 		{"control char 0x01 in string", "\"\x01\""},
 		{"control char 0x1f in string", "\"\x1f\""},
 		{"non-ASCII byte outside string", "\x80"},
+		{"invalid UTF-8 byte in string", "\"\xff\""}, // RFC 8785 §3.2.4
+		{"truncated UTF-8 sequence in string", "\"\xc3\""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {

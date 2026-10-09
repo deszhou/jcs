@@ -13,7 +13,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 var jsonLiterals = []string{"true", "false", "null"}
@@ -173,7 +175,14 @@ func (p *parser) parseQuotedString() (string, error) {
 
 		switch {
 		case c == '"':
-			return out.String(), nil
+			// RFC 8785 §3.2.4 defines canonical output as valid UTF-8. Raw
+			// bytes copied below may form an invalid sequence (e.g. 0xff);
+			// reject so such input cannot pass through unchanged.
+			s := out.String()
+			if !utf8.ValidString(s) {
+				return "", errors.New("Invalid UTF-8 in string literal")
+			}
+			return s, nil
 
 		case c < ' ':
 			return "", errors.New("Unterminated string literal")
@@ -205,7 +214,15 @@ func (p *parser) parseQuotedString() (string, error) {
 					if err != nil {
 						return "", err
 					}
-					out.WriteRune(utf16.DecodeRune(first, second))
+					// DecodeRune returns U+FFFD when first/second are not a
+					// valid high+low surrogate pair (e.g. a reversed pair or a
+					// lone low surrogate). RFC 8785 §3.2.2.2 requires a fatal
+					// error, so reject rather than emit the replacement rune.
+					combined := utf16.DecodeRune(first, second)
+					if combined == unicode.ReplacementChar {
+						return "", errors.New("Invalid surrogate pair")
+					}
+					out.WriteRune(combined)
 				} else {
 					out.WriteRune(first)
 				}
