@@ -7,6 +7,7 @@ package jcs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +54,27 @@ func BenchmarkTransformValues(b *testing.B) {
 func BenchmarkTransformWeird(b *testing.B) {
 	for b.Loop() {
 		Transform(inputWeird)
+	}
+}
+
+func BenchmarkTransformDeeplyNested(b *testing.B) {
+	const depth = 1024
+	leaf := `"` + strings.Repeat("x", 4096) + `"`
+	cases := []struct {
+		name, open, close string
+	}{
+		{"array", "[", "]"},
+		{"unordered_object", `{"z":`, `,"a":0}`},
+	}
+	for _, tc := range cases {
+		input := []byte(strings.Repeat(tc.open, depth) + leaf + strings.Repeat(tc.close, depth))
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := Transform(input); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

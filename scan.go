@@ -11,38 +11,25 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"unicode/utf16"
 )
 
-// property is one object entry with a precomputed UTF-16 sort key (RFC 8785 §3.2.3).
+// property holds a decoded key and the byte range of its serialized key and value.
 type property struct {
-	name    string
-	sortKey []uint16
-	value   string
+	name       []byte
+	start, end int
 }
 
 // parser holds mutable state for one canonicalization pass.
 type parser struct {
-	data []byte
-	pos  int
+	data     []byte
+	pos      int
+	out      []byte
+	props    []property
+	reorders []reorder
 }
 
 func isWhiteSpace(c byte) bool {
 	return c == 0x20 || c == 0x0a || c == 0x0d || c == 0x09
-}
-
-// toSortKey maps a property name to UTF-16 code units for lexicographic compare.
-func toSortKey(s string) []uint16 {
-	for i := range len(s) {
-		if s[i] >= 0x80 {
-			return utf16.Encode([]rune(s))
-		}
-	}
-	key := make([]uint16, len(s))
-	for i := range len(s) {
-		key[i] = uint16(s[i])
-	}
-	return key
 }
 
 func (p *parser) nextChar() (byte, error) {

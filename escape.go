@@ -5,8 +5,6 @@
 
 package jcs
 
-import "strings"
-
 // JSON standard escape pairs: ASCII representation ↔ binary value.
 var (
 	asciiEscapes  = []byte{'\\', '"', 'b', 'f', 'n', 'r', 't'}
@@ -42,31 +40,19 @@ func init() {
 	}
 }
 
-// decorateString wraps rawUTF8 in JSON double-quotes, escaping characters as
-// required by RFC 8785. It is a pure function that requires no parser state.
-func decorateString(rawUTF8 string) string {
-	var b strings.Builder
-	b.Grow(len(rawUTF8) + 2)
-	b.WriteByte('"')
-	for i := range len(rawUTF8) {
-		c := rawUTF8[i]
-		if !needsEscaping[c] {
-			b.WriteByte(c)
-			continue
-		}
-		if esc := escapedChar[c]; esc != 0 {
-			b.WriteByte('\\')
-			b.WriteByte(esc)
-		} else {
-			// ASCII control character: emit \u00XX without allocating via fmt.
-			b.WriteByte('\\')
-			b.WriteByte('u')
-			b.WriteByte('0')
-			b.WriteByte('0')
-			b.WriteByte(hexDigits[c>>4])
-			b.WriteByte(hexDigits[c&0xf])
+// appendEscaped writes a decoded string as a canonical JSON string.
+func appendEscaped(out []byte, raw string) []byte {
+	out = append(out, '"')
+	for i := range len(raw) {
+		c := raw[i]
+		switch {
+		case !needsEscaping[c]:
+			out = append(out, c)
+		case escapedChar[c] != 0:
+			out = append(out, '\\', escapedChar[c])
+		default:
+			out = append(out, '\\', 'u', '0', '0', hexDigits[c>>4], hexDigits[c&0xf])
 		}
 	}
-	b.WriteByte('"')
-	return b.String()
+	return append(out, '"')
 }

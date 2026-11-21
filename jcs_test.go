@@ -115,6 +115,7 @@ func TestTransform_errors(t *testing.T) {
 
 		// semantic
 		{"duplicate key", `{"a":1,"a":2}`},
+		{"duplicate key with an escape", `{"a":1,"z":2,"\u0061":3}`},
 
 		// string escapes
 		{"invalid escape sequence", `"\q"`},
@@ -203,6 +204,16 @@ func TestTransform_objectSorting(t *testing.T) {
 			`[{"a":1,"z":3}]`,
 		},
 		{
+			"reorder sibling objects inside a reordered member",
+			`{"z":[{"z":2,"a":1},{"y":4,"b":3}],"a":{"c":6,"b":5}}`,
+			`{"a":{"b":5,"c":6},"z":[{"a":1,"z":2},{"b":3,"y":4}]}`,
+		},
+		{
+			"UTF-16 ordering at the supplementary character boundary",
+			"{\"\ue000\":4,\"\\udbff\\udffd\":3,\"\ud7ff\":1,\"\\ud800\\udc00\":2}",
+			"{\"\ud7ff\":1,\"\U00010000\":2,\"\U0010fffd\":3,\"\ue000\":4}",
+		},
+		{
 			"whitespace between tokens stripped",
 			`{ "b" : 2 , "a" : 1 }`,
 			`{"a":1,"b":2}`,
@@ -225,6 +236,17 @@ func TestTransform_objectSorting(t *testing.T) {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTransform_deeplyNestedReordering(t *testing.T) {
+	t.Parallel()
+	const depth = 256
+	leaf := `"` + strings.Repeat("x", 4096) + `"`
+	input := strings.Repeat(`{"z":`, depth) + leaf + strings.Repeat(`,"a":0}`, depth)
+	want := strings.Repeat(`{"a":0,"z":`, depth) + leaf + strings.Repeat("}", depth)
+	if got := mustTransform(t, input); got != want {
+		t.Fatal("unexpected output after reordering nested objects")
 	}
 }
 

@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Recursive-descent JSON parse → canonical string builders.
+// Recursive-descent JSON parsing and serialization into a shared buffer.
 
 package jcs
 
@@ -20,34 +20,28 @@ import (
 
 var jsonLiterals = []string{"true", "false", "null"}
 
-func (p *parser) parseEntry() (string, error) {
+func (p *parser) parseEntry() error {
 	c, err := p.scan()
 	if err != nil {
-		return "", err
+		return err
 	}
 	p.pos--
-
 	switch c {
 	case '{', '"', '[':
 		return p.parseElement()
 	default:
-		// Root scalar: scan() left p.pos at the first content byte; trim only trailing
-		// JSON whitespace (RFC 8259). Do not use string(p.data) — that breaks inputs
-		// like "  true" or "true\n".
+		// scan already skipped leading whitespace. Preserve whitespace inside
+		// the root token and trim only trailing JSON whitespace.
 		raw := strings.TrimRight(string(p.data[p.pos:]), " \t\r\n")
-		value, err := parseLiteral(raw)
-		if err != nil {
-			return "", err
-		}
 		p.pos = len(p.data)
-		return value, nil
+		return p.appendLiteral(raw)
 	}
 }
 
-func (p *parser) parseElement() (string, error) {
+func (p *parser) parseElement() error {
 	c, err := p.scan()
 	if err != nil {
-		return "", err
+		return err
 	}
 	switch c {
 	case '{':
@@ -55,112 +49,183 @@ func (p *parser) parseElement() (string, error) {
 	case '[':
 		return p.parseArray()
 	case '"':
-		raw, err := p.parseQuotedString()
-		if err != nil {
-			return "", err
-		}
-		return decorateString(raw), nil
+		_, err := p.appendString()
+		return err
 	default:
 		return p.parseSimpleType()
 	}
 }
 
-func (p *parser) parseObject() (string, error) {
-	var props []property
-	var next bool
-
-	for {
-		c, err := p.peek()
-		if err != nil {
-			return "", err
+// appendString appends a canonical string and returns its decoded contents
+// for use as an object key. Unescaped strings can be copied from the input.
+func (p *parser) appendString() ([]byte, error) {
+	start := p.pos
+	for i := start; i < len(p.data); i++ {
+		c := p.data[i]
+		if c == '"' {
+			raw := p.data[start:i]
+			if !utf8.Valid(raw) {
+				return nil, errors.New("Invalid UTF-8 in string literal")
+			}
+			p.pos = i + 1
+			p.out = append(p.out, p.data[start-1:p.pos]...)
+			return raw, nil
 		}
-		if c == '}' {
-			p.pos++
+		if c == '\\' || c < ' ' {
 			break
 		}
-
-		if next {
-			if err = p.scanFor(','); err != nil {
-				return "", err
-			}
-		}
-		next = true
-
-		if err = p.scanFor('"'); err != nil {
-			return "", err
-		}
-		name, err := p.parseQuotedString()
-		if err != nil {
-			return "", err
-		}
-		sortKey := toSortKey(name)
-
-		if err = p.scanFor(':'); err != nil {
-			return "", err
-		}
-		value, err := p.parseElement()
-		if err != nil {
-			return "", err
-		}
-		props = append(props, property{name, sortKey, value})
 	}
-
-	slices.SortFunc(props, func(a, b property) int {
-		return slices.Compare(a.sortKey, b.sortKey)
-	})
-
-	for i := 1; i < len(props); i++ {
-		if slices.Equal(props[i].sortKey, props[i-1].sortKey) {
-			return "", fmt.Errorf("Duplicate key: %s", props[i].name)
-		}
+	raw, err := p.parseQuotedString()
+	if err != nil {
+		return nil, err
 	}
-
-	var out strings.Builder
-	out.WriteByte('{')
-	for i, prop := range props {
-		if i > 0 {
-			out.WriteByte(',')
-		}
-		out.WriteString(decorateString(prop.name))
-		out.WriteByte(':')
-		out.WriteString(prop.value)
-	}
-	out.WriteByte('}')
-	return out.String(), nil
+	p.out = appendEscaped(p.out, raw)
+	return []byte(raw), nil
 }
 
-func (p *parser) parseArray() (string, error) {
-	var out strings.Builder
-	var next bool
+func (p *parser) parseProperty() (property, error) {
+	if err := p.scanFor('"'); err != nil {
+		return property{}, err
+	}
+	start := len(p.out)
+	name, err := p.appendString()
+	if err != nil {
+		return property{}, err
+	}
+	if err := p.scanFor(':'); err != nil {
+		return property{}, err
+	}
+	p.out = append(p.out, ':')
+	if err := p.parseElement(); err != nil {
+		return property{}, err
+	}
+	return property{name: name, start: start, end: len(p.out)}, nil
+}
 
-	out.WriteByte('[')
-	for {
-		c, err := p.peek()
+func (p *parser) parseObject() error {
+	start := len(p.out)
+	p.out = append(p.out, '{')
+	c, err := p.peek()
+	if err != nil {
+		return err
+	}
+	if c == '}' {
+		p.pos++
+		p.out = append(p.out, '}')
+		return nil
+	}
+	first, err := p.parseProperty()
+	if err != nil {
+		return err
+	}
+	c, err = p.scan()
+	if err != nil {
+		return err
+	}
+	if c == '}' {
+		p.out = append(p.out, '}')
+		return nil
+	}
+	// Nested objects use the same scratch slice and restore its length
+	// before returning. A single-member object needs no scratch space.
+	base := len(p.props)
+	p.props = append(p.props, first)
+	for c == ',' {
+		p.out = append(p.out, ',')
+		prop, err := p.parseProperty()
 		if err != nil {
-			return "", err
+			return err
 		}
-		if c == ']' {
-			p.pos++
+		p.props = append(p.props, prop)
+		c, err = p.scan()
+		if err != nil {
+			return err
+		}
+	}
+	if c != '}' {
+		return fmt.Errorf("Expected , but got %s", string(c))
+	}
+	p.out = append(p.out, '}')
+	props := p.props[base:]
+	// Strictly increasing keys are both ordered and unique.
+	ordered := true
+	for i := 1; i < len(props); i++ {
+		if compareNames(props[i-1].name, props[i].name) >= 0 {
+			ordered = false
 			break
 		}
-
-		if next {
-			if err = p.scanFor(','); err != nil {
-				return "", err
-			}
-			out.WriteByte(',')
-		} else {
-			next = true
-		}
-
-		element, err := p.parseElement()
-		if err != nil {
-			return "", err
-		}
-		out.WriteString(element)
 	}
-	out.WriteByte(']')
-	return out.String(), nil
+	if !ordered {
+		slices.SortFunc(props, func(a, b property) int { return compareNames(a.name, b.name) })
+		members := make([]span, len(props))
+		for i, prop := range props {
+			if i > 0 && compareNames(props[i-1].name, prop.name) == 0 {
+				return fmt.Errorf("Duplicate key: %s", prop.name)
+			}
+			members[i] = span{prop.start, prop.end}
+		}
+		p.reorders = append(p.reorders, reorder{start, len(p.out), members})
+	}
+	p.props = p.props[:base]
+	return nil
+}
+
+// Compare decoded names by UTF-16 order without allocating sort keys.
+func compareNames(a, b []byte) int {
+	for len(a) != 0 && len(b) != 0 {
+		if min(a[0], b[0]) < utf8.RuneSelf {
+			if a[0] != b[0] {
+				return int(a[0]) - int(b[0])
+			}
+			a, b = a[1:], b[1:]
+			continue
+		}
+		ar, as := utf8.DecodeRune(a)
+		br, bs := utf8.DecodeRune(b)
+		if ar != br {
+			return utf16Order(ar) - utf16Order(br)
+		}
+		a, b = a[as:], b[bs:]
+	}
+	return len(a) - len(b)
+}
+
+// All supplementary code points start with a UTF-16 high surrogate, so
+// they sort between the BMP below the surrogates and the BMP above them.
+func utf16Order(r rune) int {
+	if 0xe000 <= r && r < 0x10000 {
+		return int(r) + utf8.MaxRune + 1
+	}
+	return int(r)
+}
+
+func (p *parser) parseArray() error {
+	p.out = append(p.out, '[')
+	c, err := p.peek()
+	if err != nil {
+		return err
+	}
+	if c != ']' {
+		for {
+			if err := p.parseElement(); err != nil {
+				return err
+			}
+			c, err = p.peek()
+			if err != nil {
+				return err
+			}
+			if c == ']' {
+				break
+			}
+			if err = p.scanFor(','); err != nil {
+				return err
+			}
+			p.out = append(p.out, ',')
+		}
+	}
+	p.pos++
+	p.out = append(p.out, ']')
+	return nil
 }
 
 func (p *parser) parseQuotedString() (string, error) {
@@ -241,14 +306,14 @@ func (p *parser) parseQuotedString() (string, error) {
 	}
 }
 
-func (p *parser) parseSimpleType() (string, error) {
+func (p *parser) parseSimpleType() error {
 	var token strings.Builder
 	p.pos--
 
 	for {
 		c, err := p.scan()
 		if err != nil {
-			return "", err
+			return err
 		}
 		if c == ',' || c == ']' || c == '}' {
 			p.pos--
@@ -258,18 +323,20 @@ func (p *parser) parseSimpleType() (string, error) {
 	}
 
 	if token.Len() == 0 {
-		return "", errors.New("Missing argument")
+		return errors.New("Missing argument")
 	}
-	return parseLiteral(token.String())
+	return p.appendLiteral(token.String())
 }
 
-func parseLiteral(value string) (string, error) {
+func (p *parser) appendLiteral(value string) error {
 	if slices.Contains(jsonLiterals, value) {
-		return value, nil
+		p.out = append(p.out, value...)
+		return nil
 	}
 	f, err := strconv.ParseFloat(value, 64)
 	if err != nil {
-		return "", err
+		return err
 	}
-	return NumberToJSON(f)
+	p.out, err = appendNumber(p.out, f)
+	return err
 }

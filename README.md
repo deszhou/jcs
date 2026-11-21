@@ -107,41 +107,45 @@ Key differences from the input: `"literals"` sorts before `"numbers"` and `"stri
 
 ## Performance
 
-Benchmarks run on Apple M4 (darwin/arm64, Go 1.24). Each result is the average of 5 runs:
+The same inputs ran against cyberphone at `19d51d7fe467`, gowebpki at
+`v1.0.2`, and this library. Results are medians of three runs on an Apple M5
+(darwin/arm64) with Go 1.26.2 and `GOMAXPROCS=1`. All three implementations
+produced byte-identical canonical output for the benchmark inputs.
 
+### Time per operation (ns/op)
+
+| Scenario | cyberphone | gowebpki | **this library** |
+| --- | ---: | ---: | ---: |
+| Structures (nested object) | 1,921 | 2,197 | **1,016** |
+| Arrays (mixed array) | 569.4 | 753.3 | **381.8** |
+| Unicode (non-ASCII values) | 372.8 | 321.3 | **80.6** |
+| Values (numbers and escapes) | 1,793 | 2,517 | **997.2** |
+| Weird (special characters in keys) | 2,442 | 2,555 | **1,194** |
+| 1,024 nested arrays | 514,356 | 74,594 | **14,871** |
+| 1,024 nested objects with unordered keys | 1,238,440 | 374,331 | **191,510** |
+
+### Allocations per operation (allocs/op)
+
+| Scenario | cyberphone | gowebpki | **this library** |
+| --- | ---: | ---: | ---: |
+| Structures (nested object) | 95 | 84 | **17** |
+| Arrays (mixed array) | 27 | 25 | **10** |
+| Unicode (non-ASCII values) | 16 | 13 | **3** |
+| Values (numbers and escapes) | 53 | 51 | **22** |
+| Weird (special characters in keys) | 95 | 87 | **25** |
+| 1,024 nested arrays | 2,074 | 1,050 | **1** |
+| 1,024 nested objects with unordered keys | 15,386 | 14,362 | **2,063** |
+
+Both deep cases use a 4 KiB string at the leaf. The object case reorders keys
+at every level. Arrays and scalar values append directly to a shared buffer.
+Objects with out-of-order keys record byte ranges and emit them in UTF-16
+key order, avoiding a copy of the serialized subtree at each level.
+
+Run this library's benchmarks from the repository root.
+
+```sh
+go test -run '^$' -bench '^BenchmarkTransform' -benchmem -benchtime=120ms -count=3 -cpu=1
 ```
-go test -bench=. -benchmem -count=5
-```
-
-### Time per operation — lower is better
-
-| Scenario                      | cyberphone | gowebpki | **this library** | vs cyberphone | vs gowebpki |
-| ----------------------------- | ---------: | -------: | ---------------: | :-----------: | :---------: |
-| Structures (nested object)    |    1878 ns |  1708 ns |      **1428 ns** |     −24%      |    −16%     |
-| Arrays (mixed array)          |     595 ns |   483 ns |       **471 ns** |     −21%      |     −2%     |
-| Unicode (non-ASCII values)    |     401 ns |   374 ns |       **245 ns** |     −39%      |    −34%     |
-| Weird (special chars in keys) |    2569 ns |  2359 ns |      **1887 ns** |     −27%      |    −20%     |
-
-### Allocations per operation — lower is better
-
-| Scenario   | cyberphone | gowebpki | **this library** | reduction |
-| ---------- | :--------: | :------: | :--------------: | :-------: |
-| Structures |     95     |    95    |      **74**      |   −22%    |
-| Arrays     |     27     |    27    |      **23**      |   −15%    |
-| Unicode    |     16     |    16    |      **12**      |   −25%    |
-| Weird      |     95     |    95    |      **67**      |   −29%    |
-
-To reproduce, run `go test -bench=. -benchmem -count=5` in the root of this repo.
-
-### What drives the gains
-
-| Optimization                                       | Effect                                                   |
-| -------------------------------------------------- | -------------------------------------------------------- |
-| 256-byte escape lookup table                       | O(1) escape decisions, eliminates per-byte branching     |
-| Direct `\u00XX` byte writes                        | Removes one `fmt.Sprintf` call per control character     |
-| `slices.SortFunc` + `slices.Compare`               | Replaces `container/list` insertion sort for object keys |
-| ASCII-only fast path in sort-key builder           | Avoids `[]rune` allocation for pure-ASCII keys           |
-| `strings.Builder.Grow` pre-sized to `len(input)+2` | Cuts reallocations during string serialization           |
 
 ---
 
